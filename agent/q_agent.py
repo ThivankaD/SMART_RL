@@ -4,33 +4,75 @@ class QAgent:
     def __init__(
         self,
         alpha=0.10,
-        gamma=0.99,
-        trace_lambda=0.80,
+        gamma=1.00,  # finite-horizon uniform-cost task
         epsilon=1.0,
-        epsilon_min=0.02,
-        epsilon_decay=0.9992,   # tuned for 8 000 episodes
+        epsilon_min=0.01,
+        epsilon_decay=0.99985,
     ):
         # ─────────────────────────────────────────────────────────────
         # State shape: (hour:24, battery:11, price:5, demand:4, solar:3)
         # Action dims: 5
-        # Total Q-entries per table: 24×11×5×4×3×5 = 79 200  ≈ 0.6 MB float64
-        # Two tables (Double Q): ~1.2 MB  — memory-efficient ✓
+        # Total Q-entries per table: 24×11×5×4×3×5 = 79 200
         # ─────────────────────────────────────────────────────────────
         self.shape = (24, 11, 5, 4, 3, 5)
 
-        self.q_table_a = np.zeros(self.shape)
-        self.q_table_b = np.zeros(self.shape)
-
-        self.trace_a = np.zeros(self.shape)
-        self.trace_b = np.zeros(self.shape)
+        self.q_table = np.zeros(self.shape)
+        self._seed_heuristic_prior()
 
         self.alpha        = alpha
         self.gamma        = gamma
-        self.trace_lambda = trace_lambda
 
         self.epsilon      = epsilon
         self.epsilon_min  = epsilon_min
         self.epsilon_decay= epsilon_decay
+
+    def _seed_heuristic_prior(self):
+        price_bonus = np.array([0.05, 0.03, 0.00, 0.04, 0.01], dtype=float)
+
+        for hour in range(24):
+            for battery in range(11):
+                for price_bin in range(5):
+                    for demand_bin in range(4):
+                        for solar_bin in range(3):
+                            idx = (hour, battery, price_bin, demand_bin, solar_bin)
+
+                            self.q_table[idx + (2,)] = 0.00
+
+                            if battery < 10 and price_bin <= 1:
+                                self.q_table[idx + (0,)] = 0.08 + price_bonus[price_bin]
+
+                            if battery > 0 and price_bin >= 3:
+                                self.q_table[idx + (1,)] = 0.12 + price_bonus[price_bin]
+                                self.q_table[idx + (4,)] = 0.06 + price_bonus[price_bin] * 0.5
+
+                            if solar_bin > 0:
+                                self.q_table[idx + (3,)] = 0.10 + solar_bin * 0.03
+
+    def _heuristic_bias(self, state):
+        hour, battery, price_bin, demand_bin, solar_bin = state
+        bias = np.zeros(5, dtype=float)
+
+        cheap_hours = hour <= 5 or hour >= 21
+        peak_hours = 17 <= hour <= 20
+        solar_hours = 6 <= hour <= 17
+
+        if battery < 10 and (cheap_hours or price_bin <= 1):
+            bias[0] += 0.10
+
+        if battery > 0 and (peak_hours or price_bin >= 3):
+            bias[1] += 0.16
+            bias[4] += 0.06
+
+        if solar_bin > 0 and solar_hours:
+            bias[3] += 0.18 + 0.02 * solar_bin
+
+        if demand_bin >= 3 and battery > 0:
+            bias[1] += 0.05
+
+        if not cheap_hours and price_bin >= 2 and battery >= 9:
+            bias[2] += 0.03
+
+        return bias
 
     # ─────────────────────────────────────────────
     # State indexing  (5-tuple → clipped indices)
@@ -56,7 +98,7 @@ class QAgent:
             return int(np.random.choice(valid_actions))
 
         idx = self._state_index(state)
-        combined = self.q_table_a[idx] + self.q_table_b[idx]   # shape (5,)
+        combined = self.q_table[idx] + self._heuristic_bias(state)
 
         masked = np.full(5, -np.inf)
         for a in valid_actions:
@@ -64,45 +106,27 @@ class QAgent:
 
         return int(np.argmax(masked))
 
-    def reset_traces(self):
-        self.trace_a.fill(0.0)
-        self.trace_b.fill(0.0)
-
     # ─────────────────────────────────────────────
-    # Double Q-learning + Eligibility Traces
+    # Tabular Q-learning
     # ─────────────────────────────────────────────
-    def update(self, state, action, reward, next_state, next_valid_actions=None):
+    def update(self, state, action, reward, next_state, next_valid_actions=None, done=False):
         s      = self._state_index(state)
         s_next = self._state_index(next_state)
 
         if next_valid_actions is None:
             next_valid_actions = [0, 1, 2, 3, 4]
 
-        # Randomly assign update/eval roles (Double Q)
-        if np.random.rand() < 0.5:
-            q_target, q_eval = self.q_table_a, self.q_table_b
-            traces           = self.trace_a
+        if done:
+            td_target = reward
         else:
-            q_target, q_eval = self.q_table_b, self.q_table_a
-            traces           = self.trace_b
+            next_q = self.q_table[s_next]
+            masked_next = np.full(5, -np.inf)
+            for a in next_valid_actions:
+                masked_next[a] = next_q[a]
+            td_target = reward + self.gamma * np.max(masked_next)
 
-        # Best next action from target; evaluate with eval table
-        best_next_a = next_valid_actions[0]
-        max_val     = -np.inf
-        for a in next_valid_actions:
-            val = q_target[s_next + (a,)]
-            if val > max_val:
-                max_val     = val
-                best_next_a = a
-
-        td_target = reward + self.gamma * q_eval[s_next + (best_next_a,)]
-        td_error  = td_target - q_target[s + (action,)]
-
-        # Eligibility trace (replacing-style via accumulate then clip)
-        traces *= self.gamma * self.trace_lambda
-        traces[s + (action,)] += 1.0
-
-        q_target += self.alpha * td_error * traces
+        td_error = td_target - self.q_table[s + (action,)]
+        self.q_table[s + (action,)] += self.alpha * td_error
 
     def decay_exploration(self):
         self.epsilon = max(self.epsilon_min,

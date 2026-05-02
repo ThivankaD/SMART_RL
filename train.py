@@ -1,6 +1,7 @@
 from env.smart_home_env import SmartHomeEnv
 from agent.q_agent import QAgent
 import numpy as np
+import matplotlib.pyplot as plt
 
 # ─────────────────────────────────────────────────────────────
 # Valid-action mask
@@ -24,16 +25,15 @@ def get_valid_actions(state):
 # ─────────────────────────────────────────────────────────────
 env    = SmartHomeEnv()
 agent  = QAgent()
-episodes = 8000
+episodes = 60000
 history  = []
 
 print("Training Agent on Financial Rewards...")
 print(f"Q-table shape : {agent.shape}  "
-      f"({2 * agent.q_table_a.size * 8 / 1024:.0f} KB total for both tables)\n")
+    f"({agent.q_table.size * 8 / 1024:.0f} KB total)\n")
 
 for ep in range(episodes):
     state = env.reset()
-    agent.reset_traces()
     total_cost = 0.0
 
     while True:
@@ -42,7 +42,7 @@ for ep in range(episodes):
         next_state, reward, done, info = env.step(action)
 
         agent.update(state, action, reward, next_state,
-                     get_valid_actions(next_state))
+                     get_valid_actions(next_state), done=done)
 
         state      = next_state
         total_cost += info["cost"]
@@ -52,9 +52,9 @@ for ep in range(episodes):
     agent.decay_exploration()
     history.append(total_cost)
 
-    if (ep + 1) % 1000 == 0:
+    if (ep + 1) % 4000 == 0:
         print(f"Episode {ep+1:5d} | "
-              f"Avg Cost (last 1k): ${np.mean(history[-1000:]):.2f} | "
+              f"Avg Cost (last 4k): ${np.mean(history[-4000:]):.2f} | "
               f"ε: {agent.epsilon:.3f}")
 
 # ─────────────────────────────────────────────────────────────
@@ -62,6 +62,9 @@ for ep in range(episodes):
 # ─────────────────────────────────────────────────────────────
 def run_benchmark(policy_type, num_days=200):
     costs = []
+    saved_epsilon = agent.epsilon
+    if policy_type == "rl":
+        agent.epsilon = 0.0
     for s in range(num_days):
         test_env = SmartHomeEnv(seed=s + 500)
         state    = test_env.reset()
@@ -94,6 +97,7 @@ def run_benchmark(policy_type, num_days=200):
                 break
 
         costs.append(day_cost)
+    agent.epsilon = saved_epsilon
     return np.mean(costs)
 
 print("\nRunning benchmarks (200 days each)...")
@@ -111,3 +115,27 @@ improvement_tou  = (tou_avg  - rl_avg) / tou_avg  * 100
 improvement_idle = (idle_avg - rl_avg) / idle_avg * 100
 print(f"\nRL vs ToU  improvement : {improvement_tou:+.2f}%")
 print(f"RL vs Idle improvement : {improvement_idle:+.2f}%")
+
+# ─────────────────────────────────────────────────────────────
+# Training Cost Plot
+# ─────────────────────────────────────────────────────────────
+plt.figure(figsize=(10, 5))
+plt.plot(range(1, len(history) + 1), history, linewidth=1.2, label="Episode Cost")
+
+if len(history) >= 100:
+    rolling_window = 100
+    rolling_avg = np.convolve(history, np.ones(rolling_window) / rolling_window, mode="valid")
+    plt.plot(
+        range(rolling_window, len(history) + 1),
+        rolling_avg,
+        linewidth=2.0,
+        label=f"{rolling_window}-Episode Moving Avg",
+    )
+
+plt.title("Training Cost vs Episode")
+plt.xlabel("Episode")
+plt.ylabel("Daily Cost")
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.show()
