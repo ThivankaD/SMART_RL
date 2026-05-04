@@ -30,11 +30,19 @@ Where:
 
 ### State meanings
 
-- **`hour`**: Helps the agent learn daily patterns.
-- **`battery_bin`**: Indicates how much stored energy is available.
-- **`price_bin`**: Signals whether electricity is cheap or expensive.
-- **`demand_bin`**: Shows how heavy the load is.
-- **`solar_bin`**: Indicates whether solar energy is available.
+- **`hour`**: Current hour of the day, `0..23`.
+- **`battery_bin`**: Battery level rounded to an integer bin, `0..10` (0 = empty, 10 = full).
+- **`price_bin`**: Electricity price category (cheap → expensive).
+- **`demand_bin`**: Home’s electricity usage for that hour (kWh), grouped into low → peak.
+- **`solar_bin`**: Solar power produced for that hour (kWh), grouped into none → high.
+
+Plain-language meanings:
+
+- **Demand**: Home’s electricity usage for that hour (kWh).
+- **Solar**: Solar power produced for that hour (kWh).
+- **Battery**: Stored energy level in the battery (kWh).
+- **Grid import** = how much energy the home buys from the grid that hour (kWh).
+- **Grid export** = how much energy the home sells back to the grid (kWh), mostly from excess solar or battery.
 
 ## Action space
 
@@ -72,7 +80,9 @@ The agent uses 5 discrete actions:
 
 - `env/smart_home_env.py` — Smart-home environment and reward calculation
 - `agent/q_agent.py` — Q-learning agent and heuristic action bias
-- `train.py` — Training loop, benchmark comparison, and learning-curve plot
+- `smart_rl_runtime.py` — Shared training/simulation helpers and model save/load
+- `train.py` — Training loop, benchmark comparison, learning-curve plot, and model export
+- `app.py` — Streamlit dashboard for live action-by-action visualization
 - `requirements.txt` — Python dependencies
 
 ## Setup
@@ -103,6 +113,28 @@ Or with the venv interpreter:
 ```powershell
 & "c:\Users\Thiwanka Dissanayaka\Documents\Smart_RL\.venv\Scripts\python.exe" train.py
 ```
+
+After training, the learned policy is saved to `artifacts/q_agent.npz`.
+
+## Run the UI
+
+```powershell
+streamlit run app.py
+```
+
+Or with the venv interpreter:
+
+```powershell
+& "c:\Users\Thiwanka Dissanayaka\Documents\Smart_RL\.venv\Scripts\python.exe" -m streamlit run app.py
+```
+
+In the dashboard you can:
+
+- Load the saved Q-agent from `artifacts/q_agent.npz`
+- Upload a different `.npz` model if you want to compare runs
+- Generate a synthetic 24-hour day with a chosen seed
+- Watch each action, battery change, and step cost update live
+- Compare the agent’s cumulative cost against an idle baseline on the same day
 
 ## What the script prints
 

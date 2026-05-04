@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 
 class QAgent:
     def __init__(
@@ -131,3 +132,29 @@ class QAgent:
     def decay_exploration(self):
         self.epsilon = max(self.epsilon_min,
                            self.epsilon * self.epsilon_decay)
+
+    def save(self, file_path):
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            path,
+            q_table=self.q_table,
+            alpha=self.alpha,
+            gamma=self.gamma,
+            epsilon=self.epsilon,
+            epsilon_min=self.epsilon_min,
+            epsilon_decay=self.epsilon_decay,
+        )
+
+    @classmethod
+    def load(cls, file_path):
+        data = np.load(file_path, allow_pickle=False)
+        agent = cls(
+            alpha=float(data["alpha"]),
+            gamma=float(data["gamma"]),
+            epsilon=float(data["epsilon"]),
+            epsilon_min=float(data["epsilon_min"]),
+            epsilon_decay=float(data["epsilon_decay"]),
+        )
+        agent.q_table = data["q_table"]
+        return agent
